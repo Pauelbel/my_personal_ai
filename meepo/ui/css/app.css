@@ -48,6 +48,8 @@ input:focus, select:focus, textarea:focus, button:focus-visible { outline: 2px s
 .topbar-left, .topbar-right { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .topbar-left { flex: 1; }
 #sessions-toggle { width: 36px; height: 36px; font-size: 20px; }
+#restart { font-size: 18px; }
+#restart.spinning { animation: spin 1s linear infinite; }
 .brand { display: inline-flex; align-items: center; gap: 7px; font-weight: 700; flex: none; }
 .brand img { width: 24px; height: 24px; }
 .crumbs { display: flex; align-items: center; gap: 4px; min-width: 0; font-size: 14px; margin-left: 6px; }
@@ -513,6 +515,10 @@ dialog label.check { flex-direction: row; align-items: center; gap: 6px; font: 1
 .setting.check { display: grid; grid-template-columns: auto 1fr; column-gap: 8px; align-items: baseline; }
 .setting.check .hint { grid-column: 2; }
 .setting-name { font-weight: 500; }
+/* Параметр модели: галка «своё значение» с названием, под ней поле; без галки поле показывает значение модели. */
+.param-head { display: flex; gap: 8px; align-items: center; }
+.param input[type=number] { max-width: 180px; }
+.param input:disabled { color: var(--muted); }
 
 
 /* ---------- Вики (перенос) ---------- */

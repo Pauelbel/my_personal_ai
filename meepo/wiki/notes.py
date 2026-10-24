@@ -30,6 +30,8 @@ import re
 from dataclasses import dataclass, field
 from urllib.parse import unquote
 
+from meepo.agent.tools.web import markdown_images
+
 INDEX_FILE = "index.md"
 INDEX_HEADER = (
     "# Индекс вики\n\n"
@@ -224,16 +226,7 @@ def links_of(path: str, body: str) -> tuple[str, ...]:
 
 def images_of(path: str, body: str) -> list[tuple[str, str]]:
     """Картинки заметки: (подпись, путь от корня вики) — при пересборке заметки они не теряются."""
-    folder = posixpath.dirname(path)
-    found: dict[str, str] = {}
-    for label, target in IMAGE.findall(body):
-        target = unquote(target)
-        if re.match(r"^[a-z][a-z0-9+.-]*:", target) or target.startswith("/"):
-            continue
-        resolved = posixpath.normpath(posixpath.join(folder, target))
-        if not resolved.startswith("../"):
-            found.setdefault(resolved, label)
-    return [(label, target) for target, label in found.items()]
+    return markdown_images(path, body)
 
 
 def render(

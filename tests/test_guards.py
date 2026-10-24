@@ -178,14 +178,14 @@ def test_old_snapshots_go_first():
 def test_turn_compacts_inside_small_window(harness):
     script = [{"calls": [("read_file", {"path": f"{n}.md"})]} for n in range(4)] + ["Прочитал."]
     # Окно подобрано так, чтобы старые результаты заменялись маркерами, но сами группы ещё не выпадали целиком.
-    h = harness(script, window=10800)
+    h = harness(script, window=11800)
     for n in range(4):
         (h.project_dir / f"{n}.md").write_text(f"файл {n} " + "текст " * 400, encoding="utf-8")
     h.turn("прочитай все файлы")
     last = h.llm.requests[-1]["messages"]
     assert any(m["content"] == "[результат read_file 0.md убран из контекста — при необходимости прочитай снова]" for m in last)
     assert any("Сжатие контекста" in line for line in h.messages()[-1]["log"])
-    assert h.services.sessions.get(h.sid)["context_window"] == 10800
+    assert h.services.sessions.get(h.sid)["context_window"] == 11800
 
 
 def test_huge_paste_goes_to_file(harness):

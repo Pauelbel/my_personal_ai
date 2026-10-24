@@ -23,9 +23,9 @@ class FakeLLM:
         self.api_key = ""
 
     async def stream(self, model: str, messages: list[dict], tools: list[dict] | None = None,
-                     response_format: dict | None = None) -> AsyncIterator:
+                     response_format: dict | None = None, options: dict | None = None) -> AsyncIterator:
         self.requests.append({"model": model, "messages": [dict(item) for item in messages], "tools": tools,
-                              "response_format": response_format})
+                              "response_format": response_format, "options": options})
         if not self.script:
             raise AssertionError("Фейковой модели не хватило ответов сценария")
         item = self.script.pop(0)
@@ -50,6 +50,9 @@ class FakeLLM:
 
     async def list_models(self) -> list[str]:
         return ["fake"]
+
+    async def model_info(self, model: str) -> dict:
+        return {"thinking": True, "vision": True, "defaults": {"temperature": 1.0}}
 
     async def context_length(self, model: str) -> int | None:
         return self.window

@@ -221,9 +221,36 @@ function byTitle(pages) {
   return [...pages].sort((a, b) => a.title.localeCompare(b.title, "ru"));
 }
 
-// Заметка по пути — из чата вики: пути в ответах агента открывают её здесь.
+// Заметка по пути — из чата вики: пути в ответах агента открывают её здесь. Модель иногда портит в имени
+// букву-две (латинская s вместо «с»): тогда открывается заметка с ближайшим именем.
 export function openNote(path, toast) {
-  void openWiki(path, toast);
+  void openWiki(closestNote(path), toast);
+}
+
+const TYPOS_ALLOWED = 2;
+
+function closestNote(path) {
+  if (wikiPages.some((page) => page.path === path)) return path;
+  let best = null;
+  let bestDistance = TYPOS_ALLOWED + 1;
+  for (const page of wikiPages) {
+    const distance = editDistance(path, page.path);
+    if (distance < bestDistance) [best, bestDistance] = [page.path, distance];
+  }
+  return best ?? path;
+}
+
+function editDistance(a, b) {
+  if (Math.abs(a.length - b.length) > TYPOS_ALLOWED) return TYPOS_ALLOWED + 1;
+  let row = Array.from({ length: b.length + 1 }, (_, index) => index);
+  for (let i = 1; i <= a.length; i++) {
+    const next = [i];
+    for (let j = 1; j <= b.length; j++) {
+      next[j] = Math.min(row[j] + 1, next[j - 1] + 1, row[j - 1] + (a[i - 1] === b[j - 1] ? 0 : 1));
+    }
+    row = next;
+  }
+  return row[b.length];
 }
 
 async function openWiki(path, toast, refreshList = true) {

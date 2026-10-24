@@ -30,6 +30,11 @@ MIN_KEYWORDS = 2
 # Описание попадает в строку index.md: оно должно быть короче абзаца.
 MAX_DESCRIPTION_CHARS = 160
 IMAGE_SUFFIXES = frozenset({".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg"})
+# Пересобирая заметку, маленькая модель иногда передаёт пустые «Подробности»: заметка теряла почти весь текст.
+# Обновление, после которого от прежних строк осталось меньше этой доли, отклоняется.
+MIN_KEPT_SHARE = 0.5
+# Строки короче — заголовки таблиц, «---» и прочее, что модель вправе переписать.
+MIN_KEPT_LINE_CHARS = 20
 
 
 @dataclass(frozen=True)
@@ -281,7 +286,8 @@ class WikiService:
             for name in dict.fromkeys(fields.images):
                 source = self._attachment(name)
                 if source is None:
-                    raise ValueError(f"Картинки {name} нет: имена картинок — в сообщении пользователя, в строке «[Картинки: …]»")
+                    raise ValueError(f"Картинки {name} нет: имена картинок — в сообщении пользователя (строка «[Картинки: …]») "
+                                     "или в результате view_image")
                 image = f"{notes.IMAGES_DIR}/{name}"
                 pictures.setdefault(image, title)
                 copies.append((source, self.root / image))
@@ -302,6 +308,8 @@ class WikiService:
                 ideas=list(ideas), details=details, related=related, keywords=keywords, images=images,
             )
             _check_size(content)
+            if path:
+                _check_kept([self.read(old) for old in (path, *replaces)], content)
             for source, copy in copies:
                 copy.parent.mkdir(parents=True, exist_ok=True)
                 shutil.copyfile(source, copy)
@@ -337,6 +345,58 @@ class WikiService:
         if unknown:
             parts.append(f"ссылки на несуществующие заметки пропущены: {', '.join(unknown)}")
         return "; ".join(parts) + "."
+
+    def add_images(self, path: str, names: tuple[str, ...], under: str = "") -> str:
+        """Картинки в готовую заметку без её пересборки: в конец раздела, заголовок которого содержит under,
+        иначе — в раздел «Картинки». Текст заметки не меняется."""
+        if not names:
+            raise ValueError("Нужна хотя бы одна картинка: имя из view_image или из строки «[Картинки: …]»")
+        # Модель передаёт раздел вместе с разметкой: «#### Барри».
+        under = under.strip().lstrip("#").strip()
+        with self._lock:
+            content = self.read(path)
+            note = notes.parse(path, content)
+            copies, lines = [], []
+            for name in dict.fromkeys(names):
+                source = self._attachment(name)
+                if source is None:
+                    raise ValueError(f"Картинки {name} нет: имена картинок — в сообщении пользователя (строка «[Картинки: …]») "
+                                     "или в результате view_image")
+                image = f"{notes.IMAGES_DIR}/{name}"
+                copies.append((source, self.root / image))
+                lines.append(f"![{under or note.title}]({notes.relative_link(path, image)})")
+            block = "\n\n".join(lines)
+            rows = content.split("\n")
+            headings = [(index, len(match[1]), match[2].strip()) for index, row in enumerate(rows)
+                        if (match := re.match(r"^(#{2,6})\s+(.+?)\s*$", row))]
+            if under:
+                found = next(((index, level) for index, level, text in headings
+                              if under.casefold() in text.casefold()), None)
+                if found is None:
+                    raise ValueError(f"Раздела «{under}» в заметке нет. Разделы: "
+                                     + ", ".join(text for _, _, text in headings))
+                start, level = found
+                end = next((index for index, depth, _ in headings if index > start and depth <= level), len(rows))
+            else:
+                names_at = {text.casefold(): index for index, depth, text in headings if depth == 2}
+                if (start := names_at.get("картинки")) is not None:
+                    end = next((index for index, depth, _ in headings if index > start and depth <= 2), len(rows))
+                else:
+                    end = next((names_at[key] for key in ("связанные заметки", notes.KEYWORDS_HEADING.casefold())
+                                if key in names_at), len(rows))
+                    block = "## Картинки\n\n" + block
+            while end > 0 and not rows[end - 1].strip():
+                end -= 1
+            updated = "\n".join(rows[:end] + ["", block, ""] + rows[end:]).rstrip("\n") + "\n"
+            updated = re.sub(r"\n{3,}", "\n\n", updated)
+            _check_size(updated)
+            for source, copy in copies:
+                copy.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, copy)
+            self._backup(path)
+            (self.root / path).write_text(updated, encoding="utf-8", newline="\n")
+        where = f"в раздел «{under}»" if under else "в раздел «Картинки»"
+        return f"В заметку {path} добавлено картинок: {len(lines)}, {where}. Остальной текст не менялся."
 
     # ---------- внутреннее ----------
 
@@ -474,6 +534,32 @@ def _ideas(items: tuple[str, ...]) -> tuple[str, ...]:
             if idea:
                 result.append(idea)
     return tuple(result)
+
+
+def _text_lines(content: str) -> list[str]:
+    """Содержательные строки заметки: без фронтматтера, заголовков, источника, картинок и ключевых слов."""
+    _, body = notes.split_frontmatter(content)
+    body = body.split(f"## {notes.KEYWORDS_HEADING}")[0]
+    lines = []
+    for line in body.splitlines():
+        line = " ".join(line.strip().lstrip("-*>").split()).casefold()
+        if len(line) >= MIN_KEPT_LINE_CHARS and not line.startswith(("#", "**источник", "![")):
+            lines.append(line)
+    return lines
+
+
+def _check_kept(old_texts: list[str], content: str) -> None:
+    old = [line for text in old_texts for line in _text_lines(text)]
+    if not old:
+        return
+    new = " ".join(content.split()).casefold()
+    kept = sum(1 for line in old if line in new)
+    if kept / len(old) < MIN_KEPT_SHARE:
+        raise ValueError(
+            f"Заметка потеряла бы прежний текст: осталось {kept} из {len(old)} строк. Ничего не сохранено. "
+            "Передай в details и ideas весь прежний текст вместе с новым (прочитай заметку через wiki_read). "
+            "Чтобы только добавить картинки, вызови wiki_add_images — он не переписывает заметку"
+        )
 
 
 def _check_size(content: str) -> None:

@@ -4,6 +4,7 @@ import json
 import os
 import string
 from pathlib import Path
+from typing import Literal
 from uuid import uuid4
 
 from fastapi import APIRouter, HTTPException, Request
@@ -30,6 +31,7 @@ class TitleBody(BaseModel):
 
 class TurnBody(BaseModel):
     content: str = ""
+    browser_mode: Literal["inspect", "interact"] = "inspect"
     # Картинки, вставленные в реплику чата вики: имена из POST /api/attachments.
     attachments: list[str] = []
 
@@ -173,7 +175,7 @@ async def start_turn(session_id: str, body: TurnBody, request: Request) -> Strea
     content, attachments = body.content.strip(), tuple(body.attachments)
     try:
         turn = services.turns.start(
-            session_id, lambda emit: agent.run(session_id, content, request_id, emit, attachments))
+            session_id, lambda emit: agent.run(session_id, content, request_id, emit, attachments, body.browser_mode))
     except TurnError as exc:
         raise HTTPException(409, str(exc)) from exc
     return _follow(services.turns, turn, 0)

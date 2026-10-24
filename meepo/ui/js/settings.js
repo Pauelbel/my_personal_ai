@@ -1,4 +1,5 @@
-// Раздел «Настройки», подвкладки: «Основные» (сервер модели и модель, окно по умолчанию, лимит шагов, память),
+// Раздел «Настройки», подвкладки: «Основные» (сервер модели и модель, параметры модели, окно по умолчанию,
+// лимит шагов, память),
 // «Инструменты» агента (tools.js; там же окно браузера), «Скиллы» (skills.js) и «Заплатки» (guards.js).
 // Всё хранится в data/settings.json и действует со следующего хода.
 import { api } from "./api.js";
@@ -114,17 +115,82 @@ function modelBlock(settings, toast, onSaved) {
       toast(error);
     }
   });
+  const params = paramsBlock(settings);
+  model.addEventListener("change", () => params.show(model.value));
   const nodes = [
     field("Тип подключения", kind, "Локальный llama.cpp/LM Studio/Ollama или любой OpenAI-совместимый API."),
     field("Адрес API", server, "Адрес OpenAI-совместимого API, обычно с /v1 на конце."), keyField, probe,
     field("Модель", model, `Сейчас: ${settings.active_model || "не выбрана"}. Её же можно сменить над полем ввода чата.`),
     reset,
   ];
-  void load();
-  return { nodes, values: () => ({
-    llm_kind: kind.value, llm_base_url: address.value.trim(), model: model.value,
+  void load().then(() => params.show(model.value));
+  return { nodes, params: params.node, values: () => ({
+    llm_kind: kind.value, llm_base_url: address.value.trim(), model: model.value, ...params.values(),
     ...(keyChanged ? { llm_api_key: kind.value === "openai" ? key.value : "" } : {}),
   }) };
+}
+
+// Параметры выбранной модели. Умеет ли она думать и её собственные значения сообщает сервер (Ollama);
+// не сообщает — переключатель рассуждений доступен, а поля пустые: решает сервер.
+// Параметр без галки в запрос не идёт; сохраняются только заданные.
+function paramsBlock(settings) {
+  const node = el("section", "settings-group");
+  let rows = () => ({});
+  let current = "";
+  const show = async (model) => {
+    current = model;
+    rows = () => ({});
+    if (!model) {
+      node.replaceChildren(el("h3", "", "Параметры модели"), el("p", "hint", "Сначала выберите модель."));
+      return;
+    }
+    node.replaceChildren(el("h3", "", `Параметры модели · ${model}`), el("p", "hint", "Узнаю у сервера…"));
+    let info;
+    try {
+      info = await api.modelInfo(model);
+    } catch (error) {
+      node.replaceChildren(el("h3", "", "Параметры модели"), el("p", "error", error.message));
+      return;
+    }
+    if (current !== model) return;
+    const saved = settings.model_options?.[model] ?? {};
+    const thinking = thinkingRow(info.thinking, saved.thinking);
+    const params = info.parameters.map((spec) => paramRow(spec, info.defaults[spec.name], saved[spec.name]));
+    node.replaceChildren(el("h3", "", `Параметры модели · ${model}`), thinking.node, ...params.map((row) => row.node));
+    rows = () => Object.assign({}, thinking.value(), ...params.map((row) => row.value()));
+  };
+  return {
+    node, show,
+    values: () => (current ? { model_options: { ...settings.model_options, [current]: rows() } } : {}),
+  };
+}
+
+function thinkingRow(capable, saved) {
+  const box = Object.assign(el("input"), { type: "checkbox", checked: capable === false ? false : saved ?? true, disabled: capable === false });
+  const node = el("label", "setting check");
+  const hint = capable === true ? "Включено — модель сначала рассуждает (видно в чате над ответом): лучше на сложных задачах "
+    + "и многошаговых планах, но в 2–3 раза медленнее и тратит токены окна. Выключено — быстрые ответы на простое."
+    : capable === false ? "Модель не умеет думать." : "Сервер не сообщает, умеет ли модель думать.";
+  node.append(box, el("span", "setting-name", "Думать перед ответом"), el("span", "hint", hint));
+  return { node, value: () => (capable === false ? {} : { thinking: box.checked }) };
+}
+
+function paramRow(spec, fallback, saved) {
+  const own = saved !== undefined;
+  const box = Object.assign(el("input"), { type: "checkbox", checked: own, title: "Задать своё значение" });
+  const number = input("number", own ? saved : fallback ?? "", {
+    min: spec.min, max: spec.max, step: spec.step, disabled: !own, placeholder: "решает сервер",
+  });
+  box.addEventListener("change", () => {
+    number.disabled = !box.checked;
+    if (!box.checked) number.value = fallback ?? "";
+  });
+  const node = el("div", "setting param");
+  const head = el("label", "param-head");
+  head.append(box, el("span", "setting-name", spec.label));
+  node.append(head, number, el("span", "hint", `${spec.hint} ${fallback === undefined
+    ? "Без галки — решает сервер." : `Без галки — значение модели: ${fallback}.`}`));
+  return { node, value: () => (box.checked && number.value !== "" ? { [spec.name]: Number(number.value) } : {}) };
 }
 
 function render(settings, toast, onSaved, adding = false) {
@@ -159,6 +225,7 @@ function render(settings, toast, onSaved, adding = false) {
     : group("Модель", el("p", "hint", "Подключение к модели не настроено."), add);
   $("#settings").replaceChildren(
     modelGroup,
+    ...(block ? [block.params] : []),
     group("Ход агента",
       field("Окно по умолчанию, токенов", windowSize, "Если сервер модели сам не сообщает размер окна."),
       field("Лимит шагов за ход", rounds, "Дальше — карточка «продолжить или остановить».")),

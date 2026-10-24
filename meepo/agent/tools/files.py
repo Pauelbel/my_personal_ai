@@ -8,6 +8,7 @@ import shutil
 from pathlib import Path
 
 from meepo.agent.tools.base import SKIPPED_DIRS, Tool, ToolContext, ToolResult, inside, relative_to
+from meepo.agent.tools.web import images_footer
 
 # Сколько read_file отдаёт за раз: файл больше — оглавлением, а читается кусками строк (offset, limit).
 MAX_READ_BYTES = 64 * 1024
@@ -67,7 +68,10 @@ def read_file(args: dict, ctx: ToolContext) -> ToolResult:
     offset, limit = args.get("offset"), args.get("limit")
     if offset is None and limit is None:
         size = len(content.encode("utf-8"))
-        return ToolResult(content if size <= MAX_READ_BYTES else _overview(relative, content, size))
+        if size > MAX_READ_BYTES:
+            return ToolResult(_overview(relative, content, size))
+        # Картинки Markdown — путями от корня проекта: так их сразу можно открыть через view_image.
+        return ToolResult(content + (images_footer(relative, content) if target.suffix.lower() == ".md" else ""))
     return ToolResult(_lines(relative, content, max(offset or 1, 1), max(limit or DEFAULT_READ_LINES, 1)))
 
 

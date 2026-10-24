@@ -162,3 +162,14 @@ def test_restart_resets_pending_card(harness):
     reset_pending(h.services.sessions)
     assert h.services.sessions.get(h.sid)["pending"] is None
     assert h.messages()[-1]["content"] == INTERRUPTED
+
+
+def test_model_options_from_settings_reach_request(harness):
+    h = harness(["Ответ.", "Ещё ответ."])
+    h.turn("привет")
+    model = h.llm.requests[0]["model"]
+    assert h.llm.requests[0]["options"] == {}
+    h.services.settings_path.write_text(f'{{"model_options": {{"{model}": {{"thinking": false, "temperature": 0.2}}}}}}',
+                                        encoding="utf-8")
+    h.turn("ещё")
+    assert h.llm.requests[1]["options"] == {"thinking": False, "temperature": 0.2}

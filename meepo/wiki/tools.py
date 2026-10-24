@@ -2,7 +2,8 @@
 
 Добавление заметки — два шага: wiki_match сверяет ключевые слова с index.md, wiki_save_note пишет заметку
 по шаблону и её строку в индексе. Проверка вики — wiki_lint собирает материал, wiki_propose_edits показывает
-пользователю список правок с галочками, и применяются только отмеченные. fetch_url читает ссылку.
+пользователю список правок с галочками, и применяются только отмеченные. Поиск в интернете, чтение
+страниц и просмотр картинок — общие с основным агентом (agent/tools/web.py).
 Сервис вики — ctx.services["wiki"].
 """
 
@@ -11,7 +12,8 @@ from datetime import date
 from meepo.agent.tools.base import Tool, ToolContext, ToolResult
 from meepo.wiki.notes import MATCH_THRESHOLD
 from meepo.wiki.service import NoteFields
-from meepo.wiki.web import fetch_url
+from meepo.agent.tools import web
+from meepo.agent.tools.web import images_footer
 
 MAX_RESULT_CHARS = 6000
 # Тексты заметок для lint: около 13 тысяч токенов — с запасом помещается в окно от 32k.
@@ -42,7 +44,9 @@ def wiki_search(args: dict, ctx: ToolContext) -> ToolResult:
 
 
 def wiki_read(args: dict, ctx: ToolContext) -> ToolResult:
-    return ToolResult(_wiki(ctx).read(str(args["path"])))
+    path = str(args["path"])
+    text = _wiki(ctx).read(path)
+    return ToolResult(text + images_footer(path, text))
 
 
 def wiki_match(args: dict, ctx: ToolContext) -> ToolResult:
@@ -85,6 +89,10 @@ def wiki_save_note(args: dict, ctx: ToolContext) -> ToolResult:
     )
     path = args.get("path") or None
     return ToolResult(_wiki(ctx).save_note(fields, str(path) if path else None, tuple(args.get("replaces") or ())))
+
+
+def wiki_add_images(args: dict, ctx: ToolContext) -> ToolResult:
+    return ToolResult(_wiki(ctx).add_images(str(args["path"]), tuple(args.get("images") or ()), str(args.get("under") or "")))
 
 
 def wiki_lint(args: dict, ctx: ToolContext) -> ToolResult:
@@ -233,6 +241,7 @@ def lists(*names: str, by_comma: tuple[str, ...] = ()):
 
 STRINGS = {"type": "array", "items": {"type": "string"}}
 SAVE_LISTS = ("ideas", "keywords", "tags", "related", "replaces", "images")
+ADD_IMAGES_LISTS = ("images",)
 
 TOOLS = [
     Tool("wiki_search", "Найти в вики (заметки по статьям и ссылкам пользователя) разделы по ключевым словам",
@@ -262,13 +271,22 @@ TOOLS = [
                          "команды, таблицы, примеры. Для длинного текста — обязательно и подробно, не только оглавление. "
                          "Не повторяй здесь заголовок, источник и ключевые слова"},
              "related": {**STRINGS, "description": "Пути связанных заметок из index.md — станут ссылками и линиями графа"},
-             "images": {**STRINGS, "description": "Картинки из сообщения пользователя, которые нужно вставить в заметку: "
-                        "имена из строки «[Картинки: …]», например 1a2b3c4d5e6f.png. Уже вставленные в заметку "
-                        "картинки сохраняются сами"},
+             "images": {**STRINGS, "description": "Новые картинки для заметки: имена из строки «[Картинки: …]» "
+                        "в сообщении пользователя или из результата view_image, например 1a2b3c4d5e6f.png. Уже "
+                        "вставленные в заметку картинки сохраняются сами"},
              "path": {"type": "string", "description": "Только при дополнении: путь заметки из wiki_match"},
              "replaces": {**STRINGS, "description": "Только при слиянии дублей: пути заметок, которые вошли в эту и будут удалены"},
          }, "required": ["title", "description", "ideas", "keywords"], "additionalProperties": False},
          wiki_save_note, prepare=lists(*SAVE_LISTS, by_comma=tuple(name for name in SAVE_LISTS if name != "ideas"))),
+    Tool("wiki_add_images", "Добавить картинки в готовую заметку, не переписывая её текст: когда просят только "
+         "вставить картинку (обложку, схему). Для правки текста заметки — wiki_save_note",
+         {"type": "object", "properties": {
+             "path": {"type": "string", "description": "Путь заметки, например список_медиа.md"},
+             "images": {**STRINGS, "description": "Имена картинок из view_image или из строки «[Картинки: …]»"},
+             "under": {"type": "string", "description": "Заголовок раздела, под которым поставить картинку, например "
+                       "«Дни Сакамото»; без него — в раздел «Картинки» в конце"},
+         }, "required": ["path", "images"], "additionalProperties": False},
+         wiki_add_images, prepare=lists(*ADD_IMAGES_LISTS, by_comma=ADD_IMAGES_LISTS)),
     Tool("wiki_lint", "Lint вики: собрать индекс, похожие заметки и их тексты, чтобы найти противоречия, устаревшее и "
          "дубли. Сам ничего не меняет; найденное предложи через wiki_propose_edits",
          {"type": "object", "properties": {}, "additionalProperties": False}, wiki_lint),
@@ -283,10 +301,5 @@ TOOLS = [
              }, "required": ["kind", "notes", "problem", "change"]}}},
           "required": ["edits"], "additionalProperties": False},
          wiki_propose_edits, "wiki", propose_preview),
-    Tool("fetch_url", "Скачать веб-страницу по http(s)-ссылке и вернуть её текст без разметки (статьи, документация)",
-         {"type": "object", "properties": {
-             "url": {"type": "string", "description": "Адрес страницы, http или https"},
-             "max_chars": {"type": "integer", "description": "Сколько символов текста вернуть, по умолчанию 12000"},
-         }, "required": ["url"], "additionalProperties": False},
-         fetch_url),
+    *web.TOOLS,
 ]

@@ -105,7 +105,7 @@ export class Live {
   #result(event) {
     const entry = this.calls.get(event.call_id);
     if (!entry) return;
-    const result = { content: event.content, is_error: event.is_error };
+    const result = { content: event.content, is_error: event.is_error, meta: event.meta };
     const node = stepNode(entry.call, result);
     entry.node.replaceWith(node);
     entry.node = node;

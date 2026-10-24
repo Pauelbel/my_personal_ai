@@ -12,7 +12,7 @@ from meepo.settings import Env
 class Harness:
     """Проект, сессия и ход на фейковой модели. decisions — ответы на карточки по порядку."""
 
-    def __init__(self, tmp_path, script, window=8192) -> None:
+    def __init__(self, tmp_path, script, window=16384) -> None:
         self.project_dir = tmp_path / "project"
         self.project_dir.mkdir(exist_ok=True)
         self.llm = FakeLLM(script, window)

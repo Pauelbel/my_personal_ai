@@ -63,7 +63,12 @@ class BrowserPool:
 
     def described(self, session_id: str, ref: str) -> str:
         """Как элемент назывался в последнем снимке: «кнопка «Войти»» — для карточки подтверждения."""
-        return self._sessions.get(session_id, {}).get("elements", {}).get(ref, "")
+        item = self._sessions.get(session_id, {}).get("elements", {}).get(ref, {})
+        return item.get("description", "") if isinstance(item, dict) else str(item)
+
+    def effect(self, session_id: str, ref: str) -> str:
+        item = self._sessions.get(session_id, {}).get("elements", {}).get(ref, {})
+        return item.get("effect", "") if isinstance(item, dict) else ""
 
     async def page(self, session_id: str):
         entry = self._sessions.get(session_id)
@@ -157,7 +162,7 @@ def render_snapshot(data: dict) -> tuple[str, dict[str, str]]:
         state = "".join(f", {word}" for word, on in (("отмечен", item.get("checked")), ("недоступен", item.get("disabled"))) if on)
         value = f", значение «{item['value']}»" if item.get("value") else ""
         lines.append(f"{item['ref']} {item['role']} «{item['name']}»{value}{state} — {locator(item, counts)}")
-        elements[item["ref"]] = f"{item['role']} «{item['name']}»"
+        elements[item["ref"]] = {"description": f"{item['role']} «{item['name']}»", "effect": item.get("effect", "")}
     text = data["text"].strip()
     if len(text) > TEXT_CHARS:
         text = text[:TEXT_CHARS] + f"\n… (текст страницы обрезан: {len(data['text'])} символов)"
@@ -202,7 +207,19 @@ def preview(args: dict, ctx: ToolContext) -> dict:
             target += f" ← «{args.get('text') or args.get('value') or ''}»"
     if action == "highlight":
         target = ", ".join(_highlight_refs(args))
-    return {"title": f"Браузер: {action} {target}".strip(), "text": "Отметьте галочку, чтобы не спрашивать о браузере до конца сессии."}
+    effect = pool.effect(ctx.session_id, str(args.get("ref") or "")) if action in INTERACTIVE_ACTIONS else ""
+    text = effect or ("Это действие может изменить страницу или отправить сетевой запрос."
+                      if action in INTERACTIVE_ACTIONS else "Открытие и чтение страницы без взаимодействия.")
+    return {"title": f"Браузер: {action} {target}".strip(), "text": text, "effect": effect}
+
+
+def authorize(args: dict, ctx: ToolContext) -> str | None:
+    action = args.get("action")
+    if action in INTERACTIVE_ACTIONS and ctx.browser_mode != "interact":
+        return ("Действие заблокировано: для этого хода выбран режим браузера «Только изучать». "
+                "Не взаимодействуй со страницей; объясни, что для click/type/select/press нужно выбрать режим "
+                "«Взаимодействовать» перед отправкой следующей задачи")
+    return None
 
 
 async def browser(args: dict, ctx: ToolContext) -> ToolResult:
@@ -276,5 +293,5 @@ TOOLS = [
              "value": {"type": "string", "description": "Для select: значение или подпись пункта списка"},
              "key": {"type": "string", "description": "Для press: клавиша, например Enter, Tab, Escape"},
          }, "required": ["action"], "additionalProperties": False},
-         browser, "browser", preview, lambda args: args.get("action") in INTERACTIVE_ACTIONS),
+         browser, "browser", preview, lambda args: args.get("action") in INTERACTIVE_ACTIONS, authorize),
 ]

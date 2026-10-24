@@ -51,6 +51,22 @@
     if (node.tagName === "INPUT" && node.type === "image") return clean(node.alt);
     return clean(node.innerText || node.getAttribute("title") || node.querySelector("img")?.alt);
   };
+  const effectOf = (node, role, name) => {
+    const operation = node.closest(".opblock");
+    if (operation) {
+      const method = clean(operation.querySelector(".opblock-summary-method")?.textContent).toUpperCase();
+      const path = clean(operation.querySelector(".opblock-summary-path")?.getAttribute("data-path")
+        || operation.querySelector(".opblock-summary-path")?.textContent);
+      if (method && path) return `${method} ${path}${/execute/i.test(name) ? " — отправка API-запроса" : ""}`;
+    }
+    const form = node.closest("form");
+    if (form && (role === "button" || ["INPUT", "SELECT", "TEXTAREA"].includes(node.tagName))) {
+      return `${(form.method || "GET").toUpperCase()} ${form.action || location.href} — отправка формы`;
+    }
+    if (node.tagName === "A" && node.href) return `Переход на ${node.href}`;
+    if (role === "button") return `Нажатие кнопки «${name}» может изменить состояние страницы или отправить запрос`;
+    return "";
+  };
   const items = [];
   for (const node of document.querySelectorAll(selector)) {
     if (!visible(node)) continue;
@@ -59,8 +75,9 @@
     const ref = `e${items.length + 1}`;
     node.setAttribute("data-meepo-ref", ref);
     const secret = node.type === "password";
+    const name = nameOf(node, role, label);
     items.push({
-      ref, role, label, name: nameOf(node, role, label), tag: node.tagName.toLowerCase(),
+      ref, role, label, name, effect: effectOf(node, role, name), tag: node.tagName.toLowerCase(),
       placeholder: clean(node.getAttribute("placeholder")),
       testid: node.getAttribute("data-testid") || node.getAttribute("data-test") || "",
       id: node.id && /^[A-Za-z][\w-]*$/.test(node.id) ? node.id : "",

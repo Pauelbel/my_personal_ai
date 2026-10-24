@@ -21,12 +21,14 @@ const TOOL_STEPS = {
   move_path: ["Перемещено", "files"], make_dir: ["Создана папка", "files"], plan: ["План задачи", null],
   read_skill: ["Прочитан скилл", "skills"], create_skill: ["Создан скилл", "skills"], update_skill: ["Изменён скилл", "skills"],
   run_skill: ["Запуск скилла", "skills"], run_command: ["Команда", "command"], browser: ["Браузер", "browser"],
-  remember: ["Запомнено", "memory"],
+  remember: ["Запомнено", "memory"], web_search: ["Поиск в интернете", "web"], fetch_url: ["Прочитана страница", "web"],
+  view_image: ["Просмотрена картинка", "web"],
 };
 const ACTIVITY = {
   files: ["Работаю с файлами", "Работал с файлами"], skills: ["Работаю со скиллами", "Работал со скиллами"],
   command: ["Выполняю команды", "Выполнял команды"], browser: ["Работаю в браузере", "Работал в браузере"],
-  memory: ["Вспоминаю", "Обращался к памяти"], other: ["Выполняю шаги", "Выполнил шаги"],
+  memory: ["Вспоминаю", "Обращался к памяти"], web: ["Ищу в интернете", "Искал в интернете"],
+  other: ["Выполняю шаги", "Выполнил шаги"],
 };
 
 function describe(name) {
@@ -161,9 +163,13 @@ function replyNode(text) {
 export function stepNode(call, result) {
   const state = !result ? "pending" : result.is_error ? "failed" : "done";
   const args = parse(call.arguments);
-  const target = args.path || args.name || args.query || args.url || args.command || args.action || "";
-  const body = el("pre");
-  body.textContent = `${call.name} ${JSON.stringify(args, null, 2)}\n\n→ ${result?.content ?? "—"}`;
+  const target = args.path || args.name || args.query || args.url || args.source || args.command || args.action || "";
+  const text = el("pre");
+  text.textContent = `${call.name} ${JSON.stringify(args, null, 2)}\n\n→ ${result?.content ?? "—"}`;
+  // Картинка, которую посмотрел агент (view_image), — миниатюрой над подробностями шага.
+  const images = result?.meta?.images ?? [];
+  const body = images.length ? el("div") : text;
+  if (images.length) body.append(imagesNode(images), text);
   const metaText = state === "failed" ? "ошибка" : state === "pending" ? "…" : "";
   const node = row(state, `call:${call.id}`, STEP_ICON[state], describe(call.name)[0], String(target), metaText, body);
   node.querySelector(".step-name").title = call.name;
@@ -200,7 +206,7 @@ function userNode(message) {
   return node;
 }
 
-// Картинки реплики (чат вики): миниатюры, щелчок открывает картинку целиком.
+// Картинки реплики или шага view_image: миниатюры, щелчок открывает картинку целиком.
 function imagesNode(names) {
   const box = el("div", "msg-images");
   for (const name of names) {

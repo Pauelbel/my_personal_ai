@@ -350,6 +350,27 @@ function showView(view) {
   if (view === "settings") void showSettings(toast, (saved) => void showModel(saved));
 }
 
+// Перезапуск сервера: ждём, пока новый процесс поднимется, и обновляем страницу.
+async function restart() {
+  if (state.live && !window.confirm("Идёт ход — перезапуск его оборвёт. Перезапустить Мипо?")) return;
+  const button = $("#restart");
+  button.disabled = true;
+  button.classList.add("spinning");
+  try {
+    detach();
+    await api.restart();
+    for (let attempt = 0; attempt < 60; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 500));
+      if (await api.alive()) return window.location.reload();
+    }
+    throw new Error("Мипо не поднялся за 30 секунд — посмотрите терминал, где он запущен.");
+  } catch (error) {
+    toast(error);
+  }
+  button.disabled = false;
+  button.classList.remove("spinning");
+}
+
 function showTheme() {
   $("#theme-toggle").textContent = document.documentElement.dataset.theme === "dark" ? "☀" : "☾";
 }
@@ -399,6 +420,7 @@ function bind() {
     },
   });
   $("#sessions-toggle").addEventListener("click", () => { $("#sidebar").hidden = !$("#sidebar").hidden; });
+  $("#restart").addEventListener("click", () => void restart());
   $("#theme-toggle").addEventListener("click", () => {
     const theme = document.documentElement.dataset.theme === "dark" ? "light" : "dark";
     document.documentElement.dataset.theme = theme;

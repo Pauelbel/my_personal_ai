@@ -74,6 +74,8 @@ class UserSettings:
     guards: dict[str, bool] = field(default_factory=default_guards)
     browser_headed: bool = True
     memory_auto_update_messages: int = 10
+    # Параметры по модели: {id модели: {"thinking": bool, "temperature": 0.7, …}}; чего нет — решает модель.
+    model_options: dict[str, dict] = field(default_factory=dict)
 
     @classmethod
     def load(cls, path: Path) -> "UserSettings":

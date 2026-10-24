@@ -24,6 +24,8 @@ class ToolResult:
     is_error: bool = False
     # Данные для интерфейса: сохраняются с результатом в истории, модели не отправляются.
     meta: dict | None = None
+    # Картинки (имена в data/attachments), которые модель увидит рядом с результатом: view_image.
+    images: tuple[str, ...] = ()
 
 
 @dataclass
@@ -36,6 +38,8 @@ class ToolContext:
     request_id: str = ""
     emit: Callable[[dict], None] = lambda event: None
     services: dict = field(default_factory=dict)
+    goal: str = ""
+    browser_mode: str = "inspect"
 
 
 @dataclass(frozen=True)
@@ -48,6 +52,8 @@ class Tool:
     preview: Callable[[dict, ToolContext], dict] | None = None
     # Некоторые варианты одного инструмента требуют подтверждения каждый раз, даже для доверенной группы.
     always_confirm: Callable[[dict], bool] | None = None
+    # Возвращает причину блокировки вызова в текущем контексте или None.
+    authorize: Callable[[dict, ToolContext], str | None] | None = None
     # Чинит мелкие промахи модели до проверки по схеме: список строкой «a, b», номер строкой «2».
     prepare: Callable[[dict], None] | None = None
 

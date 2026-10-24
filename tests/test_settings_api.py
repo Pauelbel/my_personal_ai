@@ -22,6 +22,20 @@ def test_settings_roundtrip_and_validation(tmp_path):
         assert client.get("/api/models").json() == ["fake"]
 
 
+def test_model_options_validation_and_info(tmp_path):
+    app = create_app(Env(data_path=tmp_path, default_model="m"), FakeLLM([]))
+    with TestClient(app, base_url="http://127.0.0.1") as client:
+        options = {"m": {"thinking": False, "temperature": 0.3, "max_tokens": 1024}}
+        assert client.put("/api/settings", json={"model_options": options}).json()["model_options"] == options
+        for bad in ({"m": {"temperature": 3}}, {"m": {"max_tokens": 1.5}}, {"m": {"thinking": "no"}},
+                    {"m": {"magic": 1}}, {"m": []}):
+            assert client.put("/api/settings", json={"model_options": bad}).status_code == 400
+        info = client.get("/api/models/info", params={"model": "m"}).json()
+        assert info["thinking"] is True and info["defaults"] == {"temperature": 1.0}
+        assert "temperature" in [item["name"] for item in info["parameters"]]
+        assert all("ollama" not in item and item["hint"] for item in info["parameters"])
+
+
 def test_model_connection_key_and_reset(tmp_path):
     app = create_app(Env(data_path=tmp_path, llm_base_url="http://env/v1", default_model="env-model"), FakeLLM([]))
     with TestClient(app, base_url="http://127.0.0.1") as client:

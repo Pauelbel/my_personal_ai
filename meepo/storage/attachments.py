@@ -1,4 +1,5 @@
-"""Картинки из чата вики: файлы в data/attachments, в сообщении хранятся только их имена.
+"""Картинки: присланные в чат и открытые агентом через view_image — файлы в data/attachments, в сообщении хранятся
+только их имена.
 
 Имя — случайный id с расширением по типу картинки: по нему файл находят и отдают, а путь к чужому
 файлу в имя не подставить. В заметку вики уходит копия картинки.
@@ -16,6 +17,19 @@ DATA_URL = re.compile(r"^data:(image/[a-z+.-]+);base64,(.+)$", re.DOTALL)
 NAME = re.compile(r"^[0-9a-f]{12}\.(png|jpg|webp|gif)$")
 
 
+def image_type(data: bytes) -> str | None:
+    """Расширение картинки по сигнатуре файла; None — не PNG, JPEG, WebP или GIF."""
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "png"
+    if data.startswith(b"\xff\xd8\xff"):
+        return "jpg"
+    if data[:4] == b"RIFF" and data[8:12] == b"WEBP":
+        return "webp"
+    if data.startswith((b"GIF87a", b"GIF89a")):
+        return "gif"
+    return None
+
+
 class AttachmentStore:
     def __init__(self, root: Path) -> None:
         self.root = root
@@ -29,9 +43,16 @@ class AttachmentStore:
             data = base64.b64decode(match[2], validate=True)
         except (binascii.Error, ValueError) as exc:
             raise ValueError("Картинка повреждена") from exc
+        return self.save_bytes(data)
+
+    def save_bytes(self, data: bytes) -> str:
+        """Картинка из байтов (скачанная или из файла): тип — по первым байтам, а не по расширению или заголовку."""
+        kind = image_type(data)
+        if kind is None:
+            raise ValueError("Это не картинка PNG, JPEG, WebP или GIF")
         if len(data) > MAX_IMAGE_BYTES:
             raise ValueError(f"Картинка больше {MAX_IMAGE_BYTES // 1024 // 1024} МБ")
-        name = f"{uuid4().hex[:12]}.{IMAGE_TYPES[match[1]]}"
+        name = f"{uuid4().hex[:12]}.{kind}"
         self.root.mkdir(parents=True, exist_ok=True)
         (self.root / name).write_bytes(data)
         return name

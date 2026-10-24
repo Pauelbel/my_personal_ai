@@ -4,13 +4,13 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from urllib.parse import urlsplit
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, PlainTextResponse
 from fastapi.staticfiles import StaticFiles
 
 from meepo.agent.approvals import Approvals, reset_pending
 from meepo.agent.loop import Agent
-from meepo.agent.tools import command, files, memory, plan, search, skills
+from meepo.agent.tools import command, files, memory, plan, search, skills, web
 from meepo.agent.tools.browser import TOOLS as BROWSER_TOOLS
 from meepo.agent.tools.browser import BrowserPool
 from meepo.agent.turns import TurnHub
@@ -71,12 +71,12 @@ class Services:
         self.agent = Agent(
             sessions=self.sessions, projects=self.projects, approvals=self.approvals, llm=self.llm,
             settings=self.settings,
-            tools=[*files.TOOLS, *search.TOOLS, *plan.TOOLS, *skills.TOOLS, *command.TOOLS, *BROWSER_TOOLS,
+            tools=[*files.TOOLS, *search.TOOLS, *plan.TOOLS, *skills.TOOLS, *command.TOOLS, *BROWSER_TOOLS, *web.TOOLS,
                    *memory.TOOLS],
             default_model=env.default_model,
             services={"registry": self.skills, "env": self.skills_env, "secrets": self.secrets,
                       "history": self.history, "llm_info": self.llm_info, "browsers": self.browsers,
-                      "memory": self.memory, "memory_updater": self.memory_updater},
+                      "memory": self.memory, "memory_updater": self.memory_updater, "attachments": self.attachments},
         )
         self.wiki_agent = WikiAgent(
             env.data_path / "wiki", sessions=self.sessions, projects=self.projects, approvals=self.approvals,
@@ -130,6 +130,9 @@ def create_app(env: Env | None = None, llm=None) -> FastAPI:
 
     app = FastAPI(title="Meepo", version="2.0.0", lifespan=lifespan)
     app.state.services = services
+    # uvicorn.Server ставит meepo.main; без него (тесты, чужой запуск) перезапуск из интерфейса недоступен.
+    app.state.server = None
+    app.state.restart = False
 
     @app.middleware("http")
     async def local_only(request: Request, call_next):
@@ -159,5 +162,13 @@ def create_app(env: Env | None = None, llm=None) -> FastAPI:
     @app.get("/", include_in_schema=False)
     def index() -> FileResponse:
         return FileResponse(UI_DIR / "index.html")
+
+    @app.post("/api/restart", status_code=204)
+    def restart() -> None:
+        """Остановить сервер штатно и запустить заново (meepo.main); идущие ходы обрываются."""
+        if app.state.server is None:
+            raise HTTPException(409, "Сервер запущен не через meepo.main — перезапустите его вручную")
+        app.state.restart = True
+        app.state.server.should_exit = True
 
     return app

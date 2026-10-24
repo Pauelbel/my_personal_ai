@@ -106,5 +106,10 @@ export const api = {
   tools: () => request("/tools"),
   // Модели сервера: текущего или по адресу (проверка до сохранения настроек).
   models: (baseUrl = "") => request(`/models${baseUrl ? `?${q({ base_url: baseUrl })}` : ""}`),
+  modelInfo: (model) => request(`/models/info?${q({ model })}`),
   probeModels: (baseUrl, apiKey = "") => request("/models/probe", json("POST", { base_url: baseUrl, api_key: apiKey })),
+
+  restart: () => request("/restart", { method: "POST" }),
+  // Сервер снова отвечает (после перезапуска): false, пока он не поднялся.
+  alive: () => fetch("/api/settings").then((response) => response.ok, () => false),
 };

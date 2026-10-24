@@ -31,6 +31,7 @@ PASTE_TAIL_CHARS = 500
 # старых остаются только имена. Картинка стоит модели сотни токенов, оценка — с запасом.
 IMAGE_MESSAGES = 3
 IMAGE_TOKENS = 800
+NO_VISION = "Эта модель не видит картинок: что на ней, ты не знаешь — так и скажи пользователю. Имя картинки для вставки в заметку — выше."
 
 
 def estimate_tokens(text: str | None) -> int:
@@ -45,10 +46,10 @@ def message_tokens(message: dict) -> int:
 
 def history_messages(history: list[dict], images: Callable[[str], Path | None] | None = None) -> list[dict]:
     """Сохранённые сообщения → сообщения для модели. Служебные поля (meta, stats, reasoning) модели не нужны.
-    images — файл картинки по имени (чат вики): имена картинок пишутся в текст реплики, сами картинки модель
-    видит в IMAGE_MESSAGES последних репликах с ними."""
+    images — файл картинки по имени: имена картинок пишутся в текст реплики, сами картинки (присланные в чат
+    и открытые через view_image) модель видит в IMAGE_MESSAGES последних сообщениях с ними."""
     results = {item["tool_call_id"]: item for item in history if item["role"] == "tool"}
-    with_images = [item["id"] for item in history if item["role"] == "user" and item.get("attachments")]
+    with_images = [item["id"] for item in history if item.get("attachments") or item.get("images")]
     seen = set(with_images[-IMAGE_MESSAGES:])
     messages: list[dict] = []
     for item in history:
@@ -60,8 +61,15 @@ def history_messages(history: list[dict], images: Callable[[str], Path | None] |
             messages.append({"role": "assistant", "content": item.get("content") or None, "tool_calls": item["tool_calls"]})
             for call in item["tool_calls"]:
                 result = results.get(call["id"])
-                messages.append({"role": "tool", "tool_call_id": call["id"], "name": call["name"], "about": about(call),
-                                 "content": result["content"] if result else INTERRUPTED_CALL})
+                message = {"role": "tool", "tool_call_id": call["id"], "name": call["name"], "about": about(call),
+                           "content": result["content"] if result else INTERRUPTED_CALL}
+                if result and result.get("images"):
+                    files = [str(path) for name in result["images"] if images and result["id"] in seen and (path := images(name))]
+                    if files:
+                        message["images"] = files
+                    else:
+                        message["content"] += "\n\n[Картинку уже не видно: открой её через view_image снова, если нужна]"
+                messages.append(message)
             continue
         if role == "user" and item.get("attachments"):
             files = [str(path) for name in item["attachments"] if images and item["id"] in seen and (path := images(name))]

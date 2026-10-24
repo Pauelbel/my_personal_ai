@@ -14,7 +14,7 @@ import json
 import logging
 import time
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 
 from meepo.agent import context
@@ -50,6 +50,8 @@ class TurnState:
     messages: list[dict]
     max_rounds: int
     emit: Callable[[dict], None]
+    goal: str = ""
+    browser_mode: str = "inspect"
     rounds: int = 0
     stopped: bool = False
     # Пользователь нажал «Нет» в карточке: текущий ход завершается без ещё одного ответа модели.
@@ -74,6 +76,8 @@ class TurnState:
     scale: float = 1.0
     # Что известно о пользователе — по реплике, с которой начался ход; в промпт каждого запроса.
     memory: str = ""
+    # Видит ли модель картинки (сервер сообщает; None — не сообщает, тогда картинки отправляются).
+    vision: bool | None = None
 
     def note(self, text: str) -> None:
         """Строка лога хода: видна под ответом и сохраняется с ним."""
@@ -121,7 +125,8 @@ class Agent:
         # Промпт пересобирается каждый раунд: план и список скиллов могли измениться посреди хода.
         registry = self.services.get("registry")
         skills = registry.prompt_list() if registry else ""
-        return system_prompt(state.project, session["plan"], skills=skills, memory=state.memory)
+        return system_prompt(state.project, session["plan"], skills=skills, memory=state.memory,
+                             browser_mode=state.browser_mode)
 
     def memory_context(self, text: str) -> str:
         memory = self.services.get("memory")
@@ -134,7 +139,7 @@ class Agent:
     # ---------- ход ----------
 
     async def run(self, session_id: str, text: str, request_id: str, emit: Callable[[dict], None],
-                  attachments: tuple[str, ...] = ()) -> None:
+                  attachments: tuple[str, ...] = (), browser_mode: str = "inspect") -> None:
         """attachments — имена картинок, присланных с репликой (чат вики)."""
         session = self.sessions.get(session_id)
         project = self.workspace(session)
@@ -147,13 +152,16 @@ class Agent:
             text = context.stash_paste(Path(project["path"]), text, window - context.reserve(window))
         self.sessions.add_message(session_id, "user", text, attachments=list(attachments))
         history = self.select_history(self.sessions.messages(session_id))
-        attachments_store = self.services.get("attachments")
-        messages = context.build("", history, attachments_store.path if attachments_store else None)
+        messages = context.build("", history, self._image)
         state = TurnState(session_id, request_id, project, model, window, messages,
                           settings.max_tool_rounds, emit, guards=dict(settings.guards),
-                          session=lambda: self.sessions.get(session_id))
+                          session=lambda: self.sessions.get(session_id), goal=text, browser_mode=browser_mode)
+        state.note(f"Цель хода: {text}")
+        state.note("Браузер: " + ("взаимодействие с подтверждением" if browser_mode == "interact" else "только изучение"))
         state.memory = self.memory_context(text)
-        ctx = ToolContext(Path(project["path"]), session_id, self.sessions, request_id, emit, self.services)
+        state.vision = (await self.llm().model_info(model)).get("vision")
+        ctx = ToolContext(Path(project["path"]), session_id, self.sessions, request_id, emit, self.services,
+                          goal=text, browser_mode=browser_mode)
         try:
             await self._loop(state, ctx)
         except asyncio.CancelledError:
@@ -228,7 +236,8 @@ class Agent:
         first = None
         state.partial = ""
         reply = None
-        async for item in self.llm().stream(state.model, messages, tools):
+        options = self.settings().model_options.get(state.model, {})
+        async for item in self.llm().stream(state.model, messages, tools, options=options):
             # Скорость генерации считается от первого токена: ожидание ответа сервера в неё не входит.
             first = first or time.perf_counter()
             if isinstance(item, Reply):
@@ -270,16 +279,26 @@ class Agent:
                 result, answer = await self._call(state, ctx, call)
                 if answer:
                     replies.append(answer)
+            if result.images and state.vision is False:
+                result = replace(result, content=f"{result.content}\n\n{context.NO_VISION}")
             self.sessions.add_message(state.session_id, "tool", result.content, tool_call_id=call["id"],
-                                      tool_name=call["name"], is_error=result.is_error, meta=result.meta)
-            state.messages.append({"role": "tool", "tool_call_id": call["id"], "name": call["name"],
-                                   "about": context.about(call), "content": result.content})
+                                      tool_name=call["name"], is_error=result.is_error, meta=result.meta,
+                                      images=list(result.images))
+            message = {"role": "tool", "tool_call_id": call["id"], "name": call["name"],
+                       "about": context.about(call), "content": result.content}
+            if result.images and state.vision is not False:
+                message["images"] = [str(path) for name in result.images if (path := self._image(name))]
+            state.messages.append(message)
             state.emit({"type": "tool_result", "call_id": call["id"], "name": call["name"],
                         "content": result.content, "is_error": result.is_error, "meta": result.meta})
         for text in replies:
             # Ответ на карточку — обычная реплика пользователя: она идёт после результатов вызовов.
             self.sessions.add_message(state.session_id, "user", text, card_reply=True)
             state.messages.append({"role": "user", "content": text})
+
+    def _image(self, name: str) -> Path | None:
+        store = self.services.get("attachments")
+        return store.path(name) if store else None
 
     async def _call(self, state: TurnState, ctx: ToolContext, call: dict) -> tuple[ToolResult, str]:
         """Результат вызова и текст пользователя, если он ответил на карточку словами."""
@@ -298,6 +317,8 @@ class Agent:
         if problem := check_arguments(tool.parameters, arguments):
             return ToolResult(f"{problem}. Параметры {tool.name}: {describe_parameters(tool.parameters)}. "
                               "Исправь и вызови снова.", True), ""
+        if tool.authorize and (problem := tool.authorize(arguments, ctx)):
+            return ToolResult(problem, True), ""
         session = self.sessions.get(state.session_id)
         always_confirm = bool(tool.always_confirm and tool.always_confirm(arguments))
         if tool.group and (always_confirm or tool.group not in session["trusted"]):
@@ -307,7 +328,7 @@ class Agent:
                 return ToolResult(f"{exc}. Исправь и вызови снова.", True), ""
             decision = await self.approvals.ask(state.session_id, {
                 "kind": "tool", "tool": tool.name, "group": tool.group, "arguments": arguments,
-                "allow_trust": not always_confirm, **preview,
+                "allow_trust": not always_confirm, "goal": state.goal, "browser_mode": state.browser_mode, **preview,
             }, state.emit)
             state.note(f"Решение по {tool.name}: {decision['action']}" + (" · доверие на сессию" if decision["trust"] else ""))
             if decision["trust"] and not always_confirm:

@@ -7,7 +7,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from meepo.agent.guards import registry as guards
-from meepo.llm.client import LLMClient, LLMError
+from meepo.llm.client import PARAMETERS, LLMClient, LLMError
 from meepo.settings import ROOT
 from meepo.settings import UserSettings, default_guards
 
@@ -34,6 +34,9 @@ def check(fields: dict) -> str | None:
         elif name == "guards":
             if not isinstance(value, dict) or set(value) - set(default_guards()) or not all(isinstance(on, bool) for on in value.values()):
                 return f"guards — {{{', '.join(default_guards())}: true/false}}"
+        elif name == "model_options":
+            if problem := check_model_options(value):
+                return problem
         elif name == "browser_headed":
             if not isinstance(value, bool):
                 return "browser_headed — true или false"
@@ -44,6 +47,25 @@ def check(fields: dict) -> str | None:
     base = fields.get("llm_base_url", "")
     if base and not base.startswith(("http://", "https://")):
         return "Адрес сервера модели — http://… или https://…, с /v1 на конце"
+    return None
+
+
+def check_model_options(value) -> str | None:
+    """{id модели: {"thinking": bool, параметр из PARAMETERS: число в границах}}."""
+    if not isinstance(value, dict) or not all(isinstance(model, str) and isinstance(options, dict) for model, options in value.items()):
+        return "model_options — {модель: {параметр: значение}}"
+    for options in value.values():
+        for name, setting in options.items():
+            if name == "thinking":
+                if not isinstance(setting, bool):
+                    return "thinking — true или false"
+                continue
+            spec = PARAMETERS.get(name)
+            if spec is None:
+                return f"Неизвестный параметр модели: {name}"
+            kinds = (int,) if spec["type"] == "int" else (int, float)
+            if isinstance(setting, bool) or not isinstance(setting, kinds) or not spec["min"] <= setting <= spec["max"]:
+                return f"{spec['label']} — число от {spec['min']} до {spec['max']}"
     return None
 
 
@@ -105,6 +127,15 @@ async def list_models(request: Request, base_url: str = "") -> list[str]:
     finally:
         if own:
             await client.close()
+
+
+@router.get("/models/info")
+async def model_info(request: Request, model: str) -> dict:
+    """Возможности модели текущего сервера и её значения параметров — для блока «Параметры модели»."""
+    info = await request.app.state.services.llm().model_info(model)
+    parameters = [{"name": name, **{key: value for key, value in spec.items() if key != "ollama"}}
+                  for name, spec in PARAMETERS.items()]
+    return {**info, "parameters": parameters}
 
 
 @router.post("/models/probe")

@@ -113,7 +113,8 @@ class MemoryUpdater:
         reply = None
         messages = [{"role": "system", "content": PROMPT}, {"role": "user", "content": request}]
         response_format = {"type": "json_schema", "json_schema": {"name": "memory", "schema": SCHEMA}}
-        async for item in self.llm().stream(model, messages, None, response_format):
+        # Строгий JSON по схеме: без рассуждений и без температуры из настроек — так маленькая модель его не ломает.
+        async for item in self.llm().stream(model, messages, None, response_format, {"thinking": False}):
             if isinstance(item, Reply):
                 reply = item
         return reply.content if reply else ""

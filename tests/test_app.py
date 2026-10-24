@@ -14,6 +14,20 @@ def test_index_page(tmp_path):
     assert client.get("/ui/css/theme.css").status_code == 200
 
 
+def test_restart(tmp_path):
+    app = create_app(Env(data_path=tmp_path))
+    client = TestClient(app, base_url="http://127.0.0.1")
+    # Без uvicorn.Server из meepo.main перезапускать нечего.
+    assert client.post("/api/restart").status_code == 409
+
+    class Server:
+        should_exit = False
+
+    app.state.server = Server()
+    assert client.post("/api/restart").status_code == 204
+    assert app.state.restart and app.state.server.should_exit
+
+
 def test_env_file_and_overrides(tmp_path, monkeypatch):
     env_file = tmp_path / ".env"
     env_file.write_text("# комментарий\nLLM_BASE_URL=http://x/v1\nPORT=9000\nLLM_VERIFY_SSL=false\n", encoding="utf-8")

@@ -3,6 +3,7 @@
 Сообщения — словари OpenAI API: {"role", "content", "tool_calls", "tool_call_id"}; вызов инструмента внутри
 Мипо — {"id", "name", "arguments"} (arguments — строка JSON), в запрос он уходит в формате OpenAI.
 `stream` отдаёт по частям ("delta", текст) и ("reasoning", текст), в конце — Reply.
+Параметры генерации (рассуждения, температура и др.) задаются по модели в настройках и приходят в `options`.
 """
 
 import base64
@@ -24,6 +25,32 @@ ERROR_DETAIL_CHARS = 300
 THINKING_END = "<channel|>"
 # Коды, которыми сервер отвергает незнакомый параметр запроса (reasoning_effort).
 REJECTED_PARAMETER = (400, 422)
+# Параметры генерации OpenAI API, которые можно задать в настройках модели. Не задан — в запрос не идёт,
+# и решает сервер. "ollama" — имя того же параметра в /api/show у Ollama: оттуда берутся значения модели;
+# "hint" — что даёт больше и меньше значение, показывается под полем в настройках.
+PARAMETERS = {
+    "temperature": {"label": "Температура", "type": "float", "min": 0, "max": 2, "step": 0.05, "ollama": "temperature",
+                    "hint": "Меньше (0–0.3) — ответы точнее и одинаковее, лучше для кода и вызова инструментов. "
+                            "Больше (0.8–1.2) — разнообразнее и смелее, но чаще ошибки и выдумки."},
+    "top_p": {"label": "Top P", "type": "float", "min": 0, "max": 1, "step": 0.05, "ollama": "top_p",
+              "hint": "Из скольких вероятных слов выбирать. Меньше (0.5–0.8) — только самые вероятные, речь суше. "
+                      "1 — без ограничения. Обычно меняют либо его, либо температуру."},
+    "max_tokens": {"label": "Макс. токенов ответа", "type": "int", "min": 1, "max": 1_048_576, "step": 256,
+                   "ollama": "num_predict",
+                   "hint": "Предел длины одного ответа, рассуждения тоже входят. Меньше — ответ обрежется на полуслове; "
+                           "больше — модель может долго писать по кругу."},
+    "presence_penalty": {"label": "Штраф за присутствие", "type": "float", "min": -2, "max": 2, "step": 0.1,
+                         "ollama": "presence_penalty",
+                         "hint": "Больше 0 — модель охотнее переходит к новым темам и реже повторяет уже сказанное. "
+                                 "Слишком много (больше 1.5) — уходит в сторону от вопроса. Меньше 0 — держится сказанного."},
+    "frequency_penalty": {"label": "Штраф за частоту", "type": "float", "min": -2, "max": 2, "step": 0.1,
+                          "ollama": "frequency_penalty",
+                          "hint": "Больше 0 — штраф за частые слова: меньше повторов и зацикливаний. "
+                                  "Слишком много — путаются термины и код, где повторы нужны."},
+    "seed": {"label": "Seed", "type": "int", "min": 0, "max": 2**31 - 1, "step": 1, "ollama": "seed",
+             "hint": "Одно и то же число — тот же ответ на тот же запрос: удобно повторять ошибку. "
+                     "Без галки — каждый раз по-новому."},
+}
 
 
 class LLMError(Exception):
@@ -99,22 +126,27 @@ class LLMClient:
             headers={"Authorization": f"Bearer {api_key}"} if api_key else None,
         )
         self._context_cache: dict[str, tuple[float, int]] = {}
-        # Рассуждения отключаются (reasoning_effort: none), как и в скиллах: Ollama с qwen3.5 кладёт в них и сам
-        # ответ, оставляя текст пустым, — ход падал с «пустым ответом»; без рассуждений ответ ещё и в 2–3 раза быстрее.
-        # Сервер параметр не принял — дальше запросы идут без него.
-        self._reasoning_off = True
+        # Сервер не принял reasoning_effort — дальше запросы идут без него.
+        self._effort_supported = True
 
     async def stream(
         self, model: str, messages: list[dict], tools: list[dict] | None = None, response_format: dict | None = None,
+        options: dict | None = None,
     ) -> AsyncIterator[tuple[str, str] | Reply]:
-        """response_format — строгий JSON-ответ по схеме ({"type": "json_schema", …}): для служебных запросов (память)."""
-        payload = {"model": model, "messages": [_message_payload(item) for item in messages], "stream": True,
+        """response_format — строгий JSON-ответ по схеме ({"type": "json_schema", …}): для служебных запросов (память).
+
+        options — параметры модели из настроек: {"thinking": False} выключает рассуждения (reasoning_effort: none),
+        остальные ключи — из PARAMETERS. Чего нет, то не отправляется: решает модель.
+        """
+        options = options or {}
+        payload = {"model": model, "messages": [part for item in messages for part in _message_payloads(item)], "stream": True,
                    "stream_options": {"include_usage": True}}
+        payload.update({name: options[name] for name in PARAMETERS if options.get(name) is not None})
         if tools:
             payload["tools"] = tools
         if response_format:
             payload["response_format"] = response_format
-        if self._reasoning_off:
+        if options.get("thinking") is False and self._effort_supported:
             payload["reasoning_effort"] = "none"
         parts: list[str] = []
         thoughts: list[str] = []
@@ -128,7 +160,7 @@ class LLMClient:
                 if response.is_error:
                     await response.aread()
                     if response.status_code in REJECTED_PARAMETER and "reasoning_effort" in payload:
-                        self._reasoning_off = False
+                        self._effort_supported = False
                         raise _ReasoningRejected
                     raise LLMError(self._http_error(response))
                 async for line in response.aiter_lines():
@@ -157,7 +189,7 @@ class LLMClient:
                             slot["name"] += function.get("name") or ""
                             slot["arguments"] += function.get("arguments") or ""
         except _ReasoningRejected:
-            async for item in self.stream(model, messages, tools, response_format):
+            async for item in self.stream(model, messages, tools, response_format, options):
                 yield item
             return
         except httpx.TimeoutException as exc:
@@ -199,6 +231,31 @@ class LLMClient:
             raise LLMUnavailable(f"Не удалось подключиться к серверу модели {self.base_url}") from exc
         except (httpx.HTTPStatusError, ValueError, KeyError, TypeError) as exc:
             raise LLMError("Сервер модели вернул некорректный список моделей") from exc
+
+    async def model_info(self, model: str) -> dict:
+        """Что сервер сообщает о модели: умеет ли она думать (None — не сообщает) и свои значения параметров.
+
+        Сообщает Ollama (/api/show: capabilities и parameters); у остальных серверов — None и пустые значения.
+        """
+        try:
+            response = await self._client.post(self._native_root + "api/show", json={"model": model})
+            response.raise_for_status()
+            data = response.json()
+            capabilities = data.get("capabilities")
+        except (httpx.HTTPError, ValueError, AttributeError):
+            return {"thinking": None, "vision": None, "defaults": {}}
+        names = {spec["ollama"]: name for name, spec in PARAMETERS.items()}
+        defaults = {}
+        for line in str(data.get("parameters") or "").splitlines():
+            key, _, value = line.strip().partition(" ")
+            if key in names:
+                try:
+                    defaults[names[key]] = (int if PARAMETERS[names[key]]["type"] == "int" else float)(value.strip())
+                except ValueError:
+                    pass
+        known = isinstance(capabilities, list)
+        return {"thinking": "thinking" in capabilities if known else None,
+                "vision": "vision" in capabilities if known else None, "defaults": defaults}
 
     async def context_length(self, model: str) -> int | None:
         """Размер окна модели, если сервер его сообщает; иначе None — тогда берётся окно из настроек."""
@@ -258,6 +315,15 @@ class LLMClient:
 
 
 IMAGE_MEDIA = {".png": "image/png", ".jpg": "image/jpeg", ".jpeg": "image/jpeg", ".webp": "image/webp", ".gif": "image/gif"}
+
+
+def _message_payloads(message: dict) -> list[dict]:
+    """Картинки результата инструмента (view_image) в роли tool серверы не принимают: они идут следом
+    отдельным сообщением пользователя."""
+    if message["role"] == "tool" and message.get("images"):
+        note = {"role": "user", "content": "Картинка из результата view_image выше.", "images": message["images"]}
+        return [_message_payload({key: value for key, value in message.items() if key != "images"}), _message_payload(note)]
+    return [_message_payload(message)]
 
 
 def _message_payload(message: dict) -> dict:
